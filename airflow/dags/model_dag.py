@@ -4,7 +4,7 @@
 from airflow.providers.redis.sensors.redis_pub_sub import RedisPubSubSensor
 from airflow.operators.python_operator import PythonOperator
 from airflow.operators.python import BranchPythonOperator
-#from airflow.models import Variable # !! Eventually convert secrets over to Airflow Variables rather than env vars
+from airflow.models import Variable
 from airflow import DAG
 
 # Other
@@ -15,7 +15,6 @@ import random
 import json
 import time
 #import db
-import os
 import re
 
 def invoke_model(**kwargs):
@@ -27,10 +26,7 @@ def branch(**kwargs):
     return 'alert'
 
 def alert(**kwargs):
-    'Alert!'
-
-def not_alert(**kwargs):
-    'Not Alert!'
+    print('Now alerting the fire department')
 
 # ========================================================================
 
@@ -46,40 +42,40 @@ default_args = {
 }
 
 # Build the DAG
-with DAG(
+DAG = DAG(
 	dag_id = 'fire-detection-and-alert',
 	description = 'Fire detection in provided images with the trained model and consequential alerting of appropriate parties upon True observations',
 	default_args = default_args,
 	catchup = False,
 	schedule_interval = '@once',
 	dagrun_timeout=datetime.timedelta(days=1) # 24 hour timeout
-	) as dag:
-    snsr_redis_pubsub = RedisPubSubSensor(
-        task_id = 'redis-sensor',
-        channels = 'fire-detection',
-        redis_conn_id = 'redis_default'
-    )
-    opr_invoke_model = PythonOperator(
-        task_id = 'invoke-model',
-        provide_context = True,
-        python_callable = invoke_model,
-    )
-    branch = BranchPythonOperator(
-        task_id = 'branch',
-        provide_context = True,
-        python_callable = branch
-    )
-    opr_alert = PythonOperator(
-        task_id = 'alert',
-        provide_context = True,
-        python_callable = alert,
-    )
-    opr_not_alert = PythonOperator(
-        task_id = 'not_alert',
-        provide_context = True,
-        python_callable = alert,
-    )
+)
+snsr_redis_pubsub = RedisPubSubSensor(
+    task_id = 'redis-sensor',
+    channels = Variable.get('redis-detection-channel'),
+    redis_conn_id = 'redis_default',
+    dag = DAG
+)
+opr_invoke_model = PythonOperator(
+    task_id = 'invoke-model',
+    provide_context = True,
+    python_callable = invoke_model,
+    dag = DAG
+)
+branch = BranchPythonOperator(
+    task_id = 'branch',
+    provide_context = True,
+    python_callable = branch,
+    dag = DAG
+)
+# This can be converted to a SubDAG
+opr_alert = PythonOperator(
+    task_id = 'alert',
+    provide_context = True,
+    python_callable = alert,
+    dag = DAG
+)
 
 # ========================================================================
 
-snsr_redis_pubsub >> opr_invoke_model >> branch >> [alert, not_alert]
+snsr_redis_pubsub >> opr_invoke_model >> branch >> opr_alert

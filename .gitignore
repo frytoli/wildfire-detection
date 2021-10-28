@@ -138,7 +138,7 @@ dmypy.json
 cython_debug/
 
 # Local
-data/
+arango-data/
 airflow/logs/
-postgres_data/
+postgres-data/
 docker-compose.yml

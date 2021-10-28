@@ -1,4 +1,4 @@
-FROM apache/airflow:2.2.1rc1-python3.9
+FROM apache/airflow:2.2.0-python3.9
 
 # Install additional dependencies
 USER root
@@ -22,5 +22,5 @@ USER 50000
 COPY requirements.txt /docker-context-files/requirements.txt
 RUN pip install --no-cache-dir --user --no-dependencies -r /docker-context-files/requirements.txt
 
-# Run pyppeteer download/install chromium script
+# Install Chrome for Pyppeteer
 RUN pyppeteer-install

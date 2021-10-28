@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 
 # Airflow
+from airflow.contrib.operators.redis_publish_operator import RedisPublishOperator
 from airflow.operators.python_operator import PythonOperator
-#from airflow.models import Variable # !! Eventually convert secrets over to Airflow Variables rather than env vars
+from airflow.models import Variable
 from airflow import DAG
 
 # Other
@@ -12,10 +13,8 @@ import datetime
 import asyncio
 import logging
 import random
-import redis
 import time
 #import db
-import os
 import re
 
 def prioritize_cameras(tweets, docs):
@@ -170,11 +169,6 @@ def scrape_classic(**kwargs):
 	# Instantiate success and failure count objects
 	success = 0
 	failure = len(docs)
-	# Start connection to Redis
-	rqueue = redis.Redis(
-		host = os.getenv('REDIS_HOST'),
-		port = os.getenv('REDIS_PORT')
-	).pubsub()
 	# Ensure that timeout var is correct type
 	if not (isinstance(timeout, int) or isinstance(timeout, int)):
 		print('[!] Provided value for timeout is not int or float. Defaulting to timeout of 3000 seconds.')
@@ -194,6 +188,7 @@ def scrape_classic(**kwargs):
 	# Initialize temp Async HTML session
 	asession = None
 	# Loop until all good responses are found
+	task_num = 1
 	while len(active) > 0 and elapsed < timeout:
 		# Sleep randomly
 		time.sleep(random.randint(13,30))
@@ -245,8 +240,15 @@ def scrape_classic(**kwargs):
 					r.close()
 				# Step 2
 				elif step == 2:
-					# Push image to next step in pipeline: the model
-					rqueue.publish('fire-detection', r.content)
+					# Publish image as a message to the Redis fire-detection queue with a RedisPublishOperator
+					opr_redis_publish = RedisPublishOperator(
+						task_id = f'redis-publish-{task_num}',
+				        channel = Variable.get('redis-detection-channel'),
+				        redis_conn_id = 'redis_default',
+						message = r.content,
+						dag = DAG
+					).execute(context=kwargs)
+					task_num += 1
 					# Update record, aka remove it from the list of active tasks
 					del active[axis]
 					# Close request object
@@ -285,22 +287,6 @@ def scrape_classic(**kwargs):
 	# Return
 	return {"success": success, "failure": failure}
 
-
-def temp_fetch_tweets():
-	print('Fetchin tweets now...')
-	time.sleep(10)
-
-def temp_scrape_classic():
-	print('Scraping now...')
-	time.sleep(10)
-	rqueue = redis.Redis(
-		host = os.getenv('REDIS_HOST'),
-		port = os.getenv('REDIS_PORT')
-	).pubsub()
-	rqueue.publish('fire-detection', 'this is a very important message!!')
-	print('Published a message to the queue')
-
-
 # ========================================================================
 
 default_args = {
@@ -315,24 +301,26 @@ default_args = {
 }
 
 # Build the DAG
-with DAG(
+DAG = DAG(
 	dag_id = 'alertwildfire-classic-scraper',
 	description = 'ALERTWildfire classic camera image scraper invoked upon observation of new tweets @ALERTWildfire',
 	default_args = default_args,
 	catchup = False,
 	schedule_interval = '*/2 * * * *', # Every two minutes
 	dagrun_timeout=datetime.timedelta(days=1) # 24 hour timeout
-	) as dag:
-	opr_fetch_tweets = PythonOperator(
-		task_id = 'fetch-tweets',
-		python_callable = fetch_tweets,
-		provide_context = True # Unsure about this for first task
-	)
-	opr_scrape_classic = PythonOperator(
-		task_id = "scrape-classic",
-		python_callable = scrape_classic,
-		provide_context = True
-	)
+)
+opr_fetch_tweets = PythonOperator(
+	task_id = 'fetch-tweets',
+	python_callable = temp_fetch_tweets,
+	provide_context = True, # Unsure about this for first task
+	dag = DAG
+)
+opr_scrape_classic = PythonOperator(
+	task_id = 'scrape-classic',
+	python_callable = temp_scrape_classic,
+	provide_context = True,
+	dag = DAG
+)
 
 # ========================================================================
 

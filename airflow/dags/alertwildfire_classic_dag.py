@@ -3,6 +3,10 @@
 # Airflow
 from airflow.contrib.operators.redis_publish_operator import RedisPublishOperator
 from airflow.operators.python_operator import PythonOperator
+from airflow.operators.python import BranchPythonOperator
+from airflow.operators.dummy import DummyOperator
+from airflow.utils.task_group import TaskGroup
+from airflow import AirflowException
 from airflow.models import Variable
 from airflow import DAG
 
@@ -14,10 +18,13 @@ import asyncio
 import logging
 import random
 import time
-#import db
+import db
 import re
 
-def prioritize_cameras(tweets, docs):
+# Set size of chunks
+n = int(Variable.get('CHUNK_SIZE'))
+
+def _prioritize_cameras(tweets, docs):
 	high = []
 	low = []
 	# Iterate over documents
@@ -31,7 +38,9 @@ def prioritize_cameras(tweets, docs):
 				low.append(doc)
 	return high, low
 
-def fetch_tweets():
+def fetch_tweets(**kwargs):
+	# Initialize database object
+	adb = db.arangodb()
 	# Load credentials from environment vars
 	search_args = load_credentials(None)
 	# Craft query
@@ -50,16 +59,27 @@ def fetch_tweets():
 		# Retrieve all links from 'cameras' collection in database
 		docs = adb.get_docs('cameras')
 		# Prioritize cameras that were mentioned in new tweets
-		high, low = prioritize(new_tweets, docs)
+		high, low = _prioritize_cameras(new_tweets, docs)
 		random.shuffle(low)
 		# Combine prioritized documents
 		sorted_docs = high + low
 		# Chunk the docs into n-long groups
 		chunked_docs = [sorted_docs[i:i+n] for i in range(0, len(sorted_docs), n)]
-		# Return
-		return chunked_docs
+		# Push chunk of docs to xcom
+		for i in range(len(chunked_docs)):
+			kwargs['ti'].xcom_push(key=f'classic-chunk-{i}', value=chunked_docs[i])
+		return True
+	else:
+		return False
 
-def get_proxies():
+def branch(**kwargs):
+	continue_to_scrape = kwargs['ti'].xcom_pull('fetch-tweets')
+	if continue_to_scrape:
+		return 'scrape-dummy'
+	else:
+		return 'noscrape-dummy'
+
+def _get_proxies():
 	'''
 		Fetch a free list of proxies from Proxyscrape.com
 
@@ -98,7 +118,7 @@ def get_proxies():
 	# Return good proxy pairs
 	return good_pairs
 
-def make_afunc(asession, axis, url, proxy, headers={}, render=False):
+def _make_afunc(asession, axis, url, proxy, headers={}, render=False):
 	'''
 		Dynamically build an asynchronous function at runtime for use by requests-html's AsyncHTMLSession's run() method
 
@@ -163,28 +183,30 @@ def scrape_classic(**kwargs):
 		Returns:
 			dictionary object of {"success": int() successful job count, "failure":int() failed job count}
 	'''
+	# Pull chunk from xcom
+	scraper_id = kwargs['ti'].task_id.split('-')[-1]
+	cameras = kwargs['ti'].xcom_pull(key=f'classic-chunk-{scraper_id}', task_ids='fetch-tweets')
+	# Instantiate success and failure count objects
+	success = 0
+	failure = len(cameras)
+	# Set timeout (seconds)
+	timeout = 3600
 	# Setup timer
 	start = time.time()
 	elapsed = time.time()-start
-	# Instantiate success and failure count objects
-	success = 0
-	failure = len(docs)
-	# Ensure that timeout var is correct type
-	if not (isinstance(timeout, int) or isinstance(timeout, int)):
-		print('[!] Provided value for timeout is not int or float. Defaulting to timeout of 3000 seconds.')
-		timeout = 3000
-	# Initialize drive object
-	gd = drive.gdrive()
 	# Fetch proxies
-	proxies = get_proxies()
+	proxies = _get_proxies()
 	# If request to proxyscrape was bad, sleep and try again
 	if len(proxies) < 1:
 		# Sleep randomly
 		time.sleep(random.randint(13,30))
 		# Try again
-		proxies = get_proxies()
+		proxies = _get_proxies()
+	# Make sure proxies were acquired successfully, otherwise report failure
+	if len(proxies) == 0:
+		raise AirflowFailException('List of proxies is empty')
 	# Initialize step vars
-	active = {doc['axis']: {'url': doc['url'], 'proxy': None, 'step':1, 'tries':0} for doc in docs}
+	active = {cam['axis']: {'url': cam['url'], 'proxy': None, 'step':1, 'tries':0} for cam in cameras}
 	# Initialize temp Async HTML session
 	asession = None
 	# Loop until all good responses are found
@@ -211,10 +233,10 @@ def scrape_classic(**kwargs):
 			if camera['step'] == 1: # Step 1
 				proxy = random.choice(proxies)
 				# Make async function for initial page request
-				aargs.append(make_afunc(asession, axis, camera['url'], proxy, render=True))
+				aargs.append(_make_afunc(asession, axis, camera['url'], proxy, render=True))
 			elif camera['step'] == 2: # Step 2
 				# Make async function for image page request
-				aargs.append(make_afunc(asession, axis, camera['url'], camera['proxy'], headers={'Referer': 'http://www.alertwildfire.org/'}))
+				aargs.append(_make_afunc(asession, axis, camera['url'], camera['proxy'], headers={'Referer': 'http://www.alertwildfire.org/'}))
 		# Make async requests and pair with axis
 		results = asession.run(*aargs)
 		# Iterate over results and complete tasks per step if previous request was successful
@@ -243,11 +265,12 @@ def scrape_classic(**kwargs):
 					# Publish image as a message to the Redis fire-detection queue with a RedisPublishOperator
 					opr_redis_publish = RedisPublishOperator(
 						task_id = f'redis-publish-{task_num}',
-				        channel = Variable.get('redis-detection-channel'),
-				        redis_conn_id = 'redis_default',
+						channel = 'redis-detection-channel',
+						redis_conn_id = 'redis-default',
 						message = r.content,
 						dag = DAG
 					).execute(context=kwargs)
+					print(f'Pushed image {axis} to detection queue')
 					task_num += 1
 					# Update record, aka remove it from the list of active tasks
 					del active[axis]
@@ -311,17 +334,40 @@ DAG = DAG(
 )
 opr_fetch_tweets = PythonOperator(
 	task_id = 'fetch-tweets',
-	python_callable = temp_fetch_tweets,
-	provide_context = True, # Unsure about this for first task
-	dag = DAG
-)
-opr_scrape_classic = PythonOperator(
-	task_id = 'scrape-classic',
-	python_callable = temp_scrape_classic,
+	python_callable = fetch_tweets,
 	provide_context = True,
 	dag = DAG
 )
+branch = BranchPythonOperator(
+	task_id = 'branch',
+	provide_context = True,
+	python_callable = branch,
+	dag = DAG
+)
+opr_scrape_dummy = DummyOperator(
+	task_id = 'scrape-dummy',
+	dag = DAG
+)
+opr_noscrape_dummy = DummyOperator(
+	task_id = 'noscrape-dummy',
+	dag = DAG
+)
+group = []
+with TaskGroup(
+	group_id = 'scraper-group',
+	dag = DAG) as scraper_group:
+	for chunk in range(n):
+		group.append(
+			PythonOperator(
+				task_id = f'scrape-classic-{chunk}',
+				python_callable = scrape_classic,
+				provide_context = True,
+				dag = DAG
+			)
+		)
+	[group[i] for i in range(n)]
 
 # ========================================================================
 
-opr_fetch_tweets >> opr_scrape_classic
+opr_fetch_tweets >> branch >> opr_noscrape_dummy
+opr_fetch_tweets >> branch >> opr_scrape_dummy >> scraper_group

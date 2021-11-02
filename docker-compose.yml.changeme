@@ -17,7 +17,7 @@ x-airflow-common:
     AIRFLOW_HOME: /opt/airflow
   volumes:
     - ./airflow/dags:/opt/airflow/dags
-    - ./airflow/plugins:/opt/airflow/plugins
+    #- ./airflow/plugins:/opt/airflow/plugins
     - ./airflow/logs:/opt/airflow/logs
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
@@ -34,9 +34,19 @@ services:
     container_name: arangodb
     environment:
       ARANGO_ROOT_PASSWORD: changeme
+    ports:
+        - 127.0.0.1:8529:8529
     volumes:
       - ./arango-data/arangodb_data:/var/lib/arangodb3
       - ./arango-data/arangodb_apps:/var/lib/arangodb3-apps
+
+  api:
+    hostname: model-api
+    build: ./api
+    environment:
+      BROKER_URL: redis://:@redis:6379/0
+    ports:
+        - 127.0.0.1:80:80
 
   postgres:
     hostname: postgres
@@ -68,13 +78,14 @@ services:
 
   webserver:
     <<: *airflow-common
+    #image: apache/airflow:2.2.0-python3.9
     command: webserver
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_UPGRADE: "true"
       _AIRFLOW_WWW_USER_CREATE: "true"
-      _AIRFLOW_WWW_USER_USERNAME: changeme
-      _AIRFLOW_WWW_USER_PASSWORD: changeme
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
     ports:
         - 127.0.0.1:8080:8080
     healthcheck:
@@ -88,6 +99,7 @@ services:
 
   scheduler:
     <<: *airflow-common
+    #image: apache/airflow:2.2.0-python3.9
     command: scheduler
     healthcheck:
       test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
@@ -100,6 +112,7 @@ services:
 
   flower:
     <<: *airflow-common
+    #image: apache/airflow:2.2.0-python3.9
     command: celery flower
     ports:
       - 127.0.0.1:5555:5555
@@ -120,16 +133,10 @@ services:
       # Required to handle warm shutdown of the celery workers properly
       # See https://airflow.apache.org/docs/docker-stack/entrypoint.html#signal-propagation
       DUMB_INIT_SETSID: 0
-      DB_HOST: arangodb
-      DB_PORT: 8529
-      DB_NAME: changeme
-      DB_USER: changeme
-      DB_PASS: changeme
       CHUNK_SIZE: 15
-      SEARCHTWEETS_ENDPOINT: changeme
-      SEARCHTWEETS_BEARER_TOKEN: changeme
-      SEARCHTWEETS_CONSUMER_KEY: changeme
-      SEARCHTWEETS_CONSUMER_SECRET: changeme
+    shm_size: '2gb'
+    deploy:
+      replicas: 2
     healthcheck:
       test:
         - "CMD-SHELL"

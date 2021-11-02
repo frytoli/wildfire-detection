@@ -20,9 +20,10 @@ import random
 import time
 import db
 import re
+import os
 
 # Set size of chunks
-n = int(Variable.get('CHUNK_SIZE'))
+n = int(os.get_env('CHUNK_SIZE'))
 
 def _prioritize_cameras(tweets, docs):
 	high = []
@@ -40,7 +41,13 @@ def _prioritize_cameras(tweets, docs):
 
 def fetch_tweets(**kwargs):
 	# Initialize database object
-	adb = db.arangodb()
+	adb = db.arangodb(
+		Variable.get('DB_HOST'),
+		Variable.get('DB_PORT'),
+		Variable.get('DB_USER'),
+		Variable.get('DB_PASS'),
+		Variable.get('DB_NAME')
+	)
 	# Load credentials from environment vars
 	search_args = load_credentials(None)
 	# Craft query

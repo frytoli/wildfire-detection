@@ -24,3 +24,7 @@ RUN pip install --no-cache-dir --user --no-dependencies -r /docker-context-files
 
 # Install Chrome for Pyppeteer
 RUN pyppeteer-install
+
+# Download fire detection YOLO3 model from Google Drive
+RUN mkdir ${AIRFLOW_HOME}/dags/model/
+RUN gdown https://drive.google.com/uc?id=1LSkxjTxx5sFY5AJuxcDEnlsj9lOpwpvr -O ${AIRFLOW_HOME}/dags/model/final.h5

@@ -54,6 +54,7 @@ class arangodb():
 			UPSERT { id: @tweetid }
 			INSERT { id: @tweetid, text: @text, scrape_timestamp: @timestamp }
 			UPDATE { } IN tweets
+			OPTIONS { exclusive: true }
 			RETURN { doc: NEW, type: OLD ? 'update' : 'insert' }
 		'''
 		return self.db.AQLQuery(aql, bindVars=bindVars, rawResults=True)

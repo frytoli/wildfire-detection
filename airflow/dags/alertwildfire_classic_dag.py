@@ -5,8 +5,8 @@ from airflow.contrib.operators.redis_publish_operator import RedisPublishOperato
 from airflow.operators.python_operator import PythonOperator
 from airflow.operators.python import BranchPythonOperator
 from airflow.operators.dummy import DummyOperator
+from airflow.exceptions import AirflowException
 from airflow.utils.task_group import TaskGroup
-from airflow import AirflowException
 from airflow.models import Variable
 from airflow import DAG
 
@@ -23,7 +23,7 @@ import re
 import os
 
 # Set size of chunks
-n = int(os.get_env('CHUNK_SIZE'))
+n = int(os.getenv('CHUNK_SIZE'))
 
 def _prioritize_cameras(tweets, docs):
 	high = []
@@ -63,6 +63,8 @@ def fetch_tweets(**kwargs):
 			new_tweets.append(tweet['text'])
 	# If a new tweet was found, kick off alertwildfire classic camera image scraping tasks
 	if len(new_tweets)>0:
+		# Get current epoch time
+		epoch = int(time.time())
 		# Retrieve all links from 'cameras' collection in database
 		docs = adb.get_docs('cameras')
 		# Prioritize cameras that were mentioned in new tweets
@@ -72,9 +74,9 @@ def fetch_tweets(**kwargs):
 		sorted_docs = high + low
 		# Chunk the docs into n-long groups
 		chunked_docs = [sorted_docs[i:i+n] for i in range(0, len(sorted_docs), n)]
-		# Push chunk of docs to xcom
+		# Push epoch timestamp and chunk of docs to xcom
 		for i in range(len(chunked_docs)):
-			kwargs['ti'].xcom_push(key=f'classic-chunk-{i}', value=chunked_docs[i])
+			kwargs['ti'].xcom_push(key=f'classic-chunk-{i}', value=[epoch, chunked_docs[i]])
 		return True
 	else:
 		return False
@@ -124,6 +126,10 @@ def _get_proxies():
 		good_pairs = []
 	# Return good proxy pairs
 	return good_pairs
+
+def _find_closest_request_time(desired, base, delta):
+	# Base time is always < desired time
+	return int(base+(((desired-base)//delta)*delta))
 
 def _make_afunc(asession, axis, url, proxy, headers={}, render=False):
 	'''
@@ -175,7 +181,7 @@ def _make_afunc(asession, axis, url, proxy, headers={}, render=False):
 		except Exception as e:
 			print(f'  [!] Error: {e}')
 			r = None
-		return r, axis, url, proxy
+		return r, axis, url
 	return _afunction
 
 def scrape_classic(**kwargs):
@@ -192,12 +198,14 @@ def scrape_classic(**kwargs):
 	'''
 	# Pull chunk from xcom
 	scraper_id = kwargs['ti'].task_id.split('-')[-1]
-	cameras = kwargs['ti'].xcom_pull(key=f'classic-chunk-{scraper_id}', task_ids='fetch-tweets')
+	message = kwargs['ti'].xcom_pull(key=f'classic-chunk-{scraper_id}', task_ids='fetch-tweets')
+	epoch = message[0]
+	cameras = message[1]
 	# Instantiate success and failure count objects
 	success = 0
 	failure = len(cameras)
-	# Set timeout (seconds)
-	timeout = 3600
+	# Set timeout to 30 minutes (seconds)
+	timeout = 1800
 	# Setup timer
 	start = time.time()
 	elapsed = time.time()-start
@@ -211,9 +219,9 @@ def scrape_classic(**kwargs):
 		proxies = _get_proxies()
 	# Make sure proxies were acquired successfully, otherwise report failure
 	if len(proxies) == 0:
-		raise AirflowFailException('List of proxies is empty')
-	# Initialize step vars
-	active = {cam['axis']: {'url': cam['url'], 'proxy': None, 'step':1, 'tries':0} for cam in cameras}
+		raise AirflowException('List of proxies is empty')
+	# Initialize records
+	active = {cam['axis']: {'url': f'''{cam['url']}{_find_closest_request_time(epoch, cam['request_time'], cam['request_time_delta'])}'''} for cam in cameras}
 	# Initialize temp Async HTML session
 	asession = None
 	# Loop until all good responses are found
@@ -231,84 +239,40 @@ def scrape_classic(**kwargs):
 				loop = asyncio.new_event_loop()
 				asyncio.set_event_loop(loop)
 			asession = AsyncHTMLSession(loop=loop)
-		# Shuffle proxies
-		random.shuffle(proxies)
 		# Craft dynamic arguments for async session
 		aargs = []
 		for axis in active:
 			camera = active[axis]
-			if camera['step'] == 1: # Step 1
-				proxy = random.choice(proxies)
-				# Make async function for initial page request
-				aargs.append(_make_afunc(asession, axis, camera['url'], proxy, render=True))
-			elif camera['step'] == 2: # Step 2
-				# Make async function for image page request
-				aargs.append(_make_afunc(asession, axis, camera['url'], camera['proxy'], headers={'Referer': 'http://www.alertwildfire.org/'}))
+			# Make async function for image page request
+			aargs.append(_make_afunc(asession, axis, camera['url'], random.choice(proxies), headers={'Referer': 'http://www.alertwildfire.org/'}, render=True))
 		# Make async requests and pair with axis
 		results = asession.run(*aargs)
-		# Iterate over results and complete tasks per step if previous request was successful
+		# Iterate over results and push image to queue is scraping was successful
 		for result in results:
-			# Parse result
+			# Parse result for ease of use
 			r = result[0]
 			axis = result[1]
 			url = result[2]
-			proxy = result[3]
-			step = active[axis]['step']
 			if r and r.status_code in [200, 301, 302, 303, 307]:
 				print(f'[-] Good response from {url}')
-				# Step 1
-				if step == 1:
-					# Find direct image url
-					img = r.html.find('.leaflet-image-layer', first=True).attrs['src']
-					src = f'http:{img}'
-					# Update record
-					active[axis]['url'] = src
-					active[axis]['proxy'] = proxy
-					active[axis]['step'] = 2
-					# Close request object
-					r.close()
-				# Step 2
-				elif step == 2:
-					# Publish image as a message to the Redis fire-detection queue with a RedisPublishOperator
-					opr_redis_publish = RedisPublishOperator(
-						task_id = f'redis-publish-{task_num}',
-						channel = 'redis-detection-channel',
-						redis_conn_id = 'redis-default',
-						message = r.content,
-						dag = DAG
-					).execute(context=kwargs)
-					print(f'Pushed image {axis} to detection queue')
-					task_num += 1
-					# Update record, aka remove it from the list of active tasks
-					del active[axis]
-					# Close request object
-					r.close()
-					# Increment success and decrement failure
-					success += 1
-					failure -= 1
-			# If not successful
-			else:
-				print(f'[-] Bad response from {url}')
-				# Step 1
-				if step == 1:
-					# Select a new proxy and update the record
-					active[axis]['proxy'] = random.choice(proxies)
-					# Close request object
-					if r:
-						r.close()
-				# Step 2
-				elif step == 2:
-					# Select a new proxy and update the record
-					active[axis]['proxy'] = random.choice(proxies)
-					# Increment number of tries
-					active[axis]['tries'] += 1
-					# If five tries have been made, demote the step back to step 1
-					if active[axis]['tries'] >= 5:
-						active[axis]['tries'] = 0
-						active[axis]['step'] = 1
-					# Close request object
-					if r:
-						r.close()
+				# Publish image as a message to the Redis fire-detection queue with a RedisPublishOperator
+				opr_redis_publish = RedisPublishOperator(
+					task_id = f'redis-publish-{scraper_id}.{task_num}',
+					channel = 'redis-detection-channel',
+					redis_conn_id = 'redis-default',
+					message = r.content,
+					dag = DAG
+				).execute(context=kwargs)
+				print(f'Pushed image {axis} to detection queue')
+				task_num += 1
+				# Update record, aka remove it from the list of active tasks
+				del active[axis]
+				# Increment success and decrement failure
+				success += 1
+				failure -= 1
+			# Close request object
+			if r:
+				r.close()
 			# Update elapsed time
 			elapsed = time.time()-start
 	print(f'[-] Elapsed time: {elapsed}')
@@ -326,8 +290,7 @@ default_args = {
 	'email_on_failure': False,
 	'email_on_retry': False,
 	'retries': 0,
-	'retry_delay': datetime.timedelta(seconds=5),
-	'concurrency': 2
+	'retry_delay': datetime.timedelta(seconds=5)
 }
 
 # Build the DAG
@@ -335,8 +298,10 @@ DAG = DAG(
 	dag_id = 'alertwildfire-classic-scraper',
 	description = 'ALERTWildfire classic camera image scraper invoked upon observation of new tweets @ALERTWildfire',
 	default_args = default_args,
+	concurrency = 4,
+	max_active_runs = 1,
 	catchup = False,
-	schedule_interval = '*/2 * * * *', # Every two minutes
+	schedule_interval = '*/5 * * * *', # Every five minutes
 	dagrun_timeout=datetime.timedelta(days=1) # 24 hour timeout
 )
 opr_fetch_tweets = PythonOperator(

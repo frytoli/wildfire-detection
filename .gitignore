@@ -142,3 +142,5 @@ arango-data/
 airflow/logs/
 postgres-data/
 docker-compose.yml
+secrets.json
+**.h5

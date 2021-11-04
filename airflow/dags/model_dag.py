@@ -15,6 +15,7 @@ from PIL import Image
 import numpy as np
 import datetime
 import logging
+import base64
 import random
 import json
 import time
@@ -27,8 +28,10 @@ def invoke_model(**kwargs):
     message = kwargs['ti'].xcom_pull('redis-sensor', key='message')
     print(f'Successfully recieved message: {message}')
 
-    # Get image array
+    # Get base64 encoded image string
     image = message['data']
+    # Decode to bytes
+    image = base64.base64decode(image.encode('utf-8'))
 
     # Set paths to model, anchors, and classes
     model_path = os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'yolo.h5') # If built with Docker, the model's name is always "yolo.h5" -- See Dockerfile
@@ -99,7 +102,7 @@ DAG = DAG(
 	dag_id = 'fire-detection-and-alert',
 	description = 'Fire detection in provided images with the trained model and consequential alerting of appropriate parties upon True observations',
 	default_args = default_args,
-	max_active_runs = 5,
+	max_active_runs = 10,
 	catchup = False,
 	schedule_interval = '*/1 * * * *', # Every minute
 	dagrun_timeout=datetime.timedelta(days=1) # 24 hour timeout

@@ -23,15 +23,35 @@ import db
 import io
 import os
 
-def invoke_model(**kwargs):
+def handle_input(**kwargs):
     # Retrieve published image via Redis Pub-Sub Sensor
     message = kwargs['ti'].xcom_pull('redis-sensor', key='message')
-    print(f'Successfully recieved message: {message}')
+    print(f'Successfully received message: {message}')
 
     # Get base64 encoded image string
     image = message['data']
     # Decode to bytes
-    image = base64.base64decode(image.encode('utf-8'))
+    try:
+        image = base64.b64decode(image)
+    except:
+        raise AirflowFailException('Received image could not be base64 decoded')
+
+    # Insert record into database
+    adb = db.arangodb(
+    	Variable.get('DB_HOST'),
+    	Variable.get('DB_PORT'),
+    	Variable.get('DB_USER'),
+    	Variable.get('DB_PASS'),
+    	Variable.get('DB_NAME')
+    )
+    id = adb.insert_image()
+
+    # Return
+    return id, image
+
+def invoke_model(**kwargs):
+    # Retrieve unique record id and bytes-representation of image from xcom
+    id, image = kwargs['ti'].xcom_pull('handle-input')
 
     # Set paths to model, anchors, and classes
     model_path = os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'yolo.h5') # If built with Docker, the model's name is always "yolo.h5" -- See Dockerfile
@@ -65,14 +85,31 @@ def invoke_model(**kwargs):
     # Get x and y sizes
     y_size, x_size, _ = np.array(new_image).shape
 
-    print(f'Detection completed in {time.time()-start} seconds')
+    # Initialize database object
+    adb = db.arangodb(
+    	Variable.get('DB_HOST'),
+    	Variable.get('DB_PORT'),
+    	Variable.get('DB_USER'),
+    	Variable.get('DB_PASS'),
+    	Variable.get('DB_NAME')
+    )
+
+    # Get elpased and completion time
+    elapsed = time.time()-start
+    timestamp = datetime.datetime.utcnow()
+    print(f'Detection completed in {elapsed} seconds')
+
     #print(prediction, y_size, x_size)
     if len(prediction) > 0:
         print('Fire detected in image')
-        new_image.save('out.jpg')
+        #new_image.save('out.jpg')
+        # Update database record
+        adb.update_image(id, timestamp, elapsed, True)
         return True
     else:
         print('No fire detected in image')
+        # Update database record
+        adb.update_image(id, timestamp, elapsed, False)
         return False
 
 def branch(**kwargs):
@@ -113,6 +150,12 @@ snsr_redis_pubsub = RedisPubSubSensor(
     redis_conn_id = 'redis-default',
     dag = DAG
 )
+opr_handle_input = PythonOperator(
+    task_id = 'handle-input',
+    provide_context = True,
+    python_callable = handle_input,
+    dag = DAG
+)
 opr_invoke_model = PythonOperator(
     task_id = 'invoke-model',
     provide_context = True,
@@ -139,4 +182,4 @@ opr_alert = PythonOperator(
 
 # ========================================================================
 
-snsr_redis_pubsub >> opr_invoke_model >> branch >> [opr_noscrape_dummy, opr_alert]
+snsr_redis_pubsub >> opr_handle_input >> opr_invoke_model >> branch >> [opr_noscrape_dummy, opr_alert]

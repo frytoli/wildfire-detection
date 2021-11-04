@@ -15,7 +15,7 @@ x-airflow-common:
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__API__AUTH_BACKEND: "airflow.api.auth.backend.basic_auth"
     AIRFLOW_HOME: /opt/airflow
-    CHUNK_SIZE: 15
+    CHUNK_SIZE: 20
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     #- ./airflow/plugins:/opt/airflow/plugins
@@ -45,7 +45,8 @@ services:
     hostname: model-api
     build: ./api
     environment:
-      BROKER_URL: redis://:@redis:6379/0
+      BACKEND_HOST: redis
+      BACKEND_PORT: 6379
     ports:
         - 127.0.0.1:80:80
 

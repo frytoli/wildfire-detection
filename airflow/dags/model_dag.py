@@ -101,7 +101,7 @@ DAG = DAG(
 	default_args = default_args,
 	max_active_runs = 5,
 	catchup = False,
-	schedule_interval = '*/2 * * * *', # Every two minutes
+	schedule_interval = '*/1 * * * *', # Every minute
 	dagrun_timeout=datetime.timedelta(days=1) # 24 hour timeout
 )
 snsr_redis_pubsub = RedisPubSubSensor(

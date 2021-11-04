@@ -16,6 +16,7 @@ from requests_html import HTMLSession, AsyncHTMLSession
 import datetime
 import asyncio
 import logging
+import base64
 import random
 import time
 import db
@@ -255,12 +256,12 @@ def scrape_classic(**kwargs):
 			url = result[2]
 			if r and r.status_code in [200, 301, 302, 303, 307]:
 				print(f'[-] Good response from {url}')
-				# Publish image as a message to the Redis fire-detection queue with a RedisPublishOperator
+				# Publish base64 encoded image string as a message to the Redis fire-detection queue with a RedisPublishOperator
 				opr_redis_publish = RedisPublishOperator(
 					task_id = f'redis-publish-{scraper_id}.{task_num}',
 					channel = 'redis-detection-channel',
 					redis_conn_id = 'redis-default',
-					message = r.content,
+					message = base64.b64encode(r.content).decode('utf-8'),
 					dag = DAG
 				).execute(context=kwargs)
 				print(f'Pushed image {axis} to detection queue')
@@ -332,9 +333,9 @@ adb = db.arangodb(
 	Variable.get('DB_PASS'),
 	Variable.get('DB_NAME')
 )
-count = int(adb.get_count('cameras'))
-task_count = count/n
-if count%n != 0:
+cam_count = adb.get_count('cameras')
+task_count = count//n
+if cam_count%n != 0:
 	task_count += 1
 group = []
 # Create task group
@@ -350,7 +351,6 @@ with TaskGroup(
 				dag = DAG
 			)
 		)
-	[group[i] for i in range(n)]
 
 # ========================================================================
 

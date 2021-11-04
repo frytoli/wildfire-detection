@@ -334,7 +334,7 @@ adb = db.arangodb(
 	Variable.get('DB_NAME')
 )
 cam_count = adb.get_count('cameras')
-task_count = count//n
+task_count = cam_count//n
 if cam_count%n != 0:
 	task_count += 1
 group = []

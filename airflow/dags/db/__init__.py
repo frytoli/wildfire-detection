@@ -58,3 +58,8 @@ class arangodb():
 			RETURN { doc: NEW, type: OLD ? 'update' : 'insert' }
 		'''
 		return self.db.AQLQuery(aql, bindVars=bindVars, rawResults=True)
+
+	def get_count(self, collection):
+		binVars = {'@collection': collection}
+		aql = '''RETURN LENGTH(@@collection)'''
+		return self.db.AQLQuery(aql, bindVars=bindVars, rawResults=True)

@@ -301,7 +301,7 @@ DAG = DAG(
 	concurrency = 4,
 	max_active_runs = 1,
 	catchup = False,
-	schedule_interval = '*/5 * * * *', # Every five minutes
+	schedule_interval = '*/2 * * * *', # Every two minutes
 	dagrun_timeout=datetime.timedelta(days=1) # 24 hour timeout
 )
 opr_fetch_tweets = PythonOperator(
@@ -324,11 +324,24 @@ opr_noscrape_dummy = DummyOperator(
 	task_id = 'noscrape-dummy',
 	dag = DAG
 )
+# Decipher number of tasks to include in group
+adb = db.arangodb(
+	Variable.get('DB_HOST'),
+	Variable.get('DB_PORT'),
+	Variable.get('DB_USER'),
+	Variable.get('DB_PASS'),
+	Variable.get('DB_NAME')
+)
+count = int(adb.get_count('cameras'))
+task_count = count/n
+if count%n != 0:
+	task_count += 1
 group = []
+# Create task group
 with TaskGroup(
 	group_id = 'scraper-group',
 	dag = DAG) as scraper_group:
-	for chunk in range(n):
+	for chunk in range(task_count):
 		group.append(
 			PythonOperator(
 				task_id = f'scrape-classic-{chunk}',

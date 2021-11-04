@@ -60,6 +60,10 @@ class arangodb():
 		return self.db.AQLQuery(aql, bindVars=bindVars, rawResults=True)
 
 	def get_count(self, collection):
-		binVars = {'@collection': collection}
+		bindVars = {'@collection': collection}
 		aql = '''RETURN LENGTH(@@collection)'''
-		return self.db.AQLQuery(aql, bindVars=bindVars, rawResults=True)
+		resp = self.db.AQLQuery(aql, bindVars=bindVars, rawResults=True)
+		if len(resp) > 0:
+			return int(resp[0])
+		else:
+			return 0

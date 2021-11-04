@@ -5,6 +5,7 @@ from pyArango import theExceptions
 from requests import exceptions
 import datetime
 import time
+import uuid
 
 class arangodb():
 	def __init__(self, DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME):
@@ -67,3 +68,36 @@ class arangodb():
 			return int(resp[0])
 		else:
 			return 0
+
+	def insert_image(self):
+		# Generate a uuid for the image
+		id = str(uuid.uuid4())
+		bindVars = {
+			'doc': {
+				'image': id,
+				'status': 'recieved',
+				'recieved_timestamp': datetime.datetime.utcnow().isoformat(),
+				'processed_timestamp': None,
+				'processed_time': None,
+				'fire': None
+			}
+		}
+		aql = '''
+			INSERT @doc INTO images
+		'''
+		self.db.AQLQuery(aql, bindVars=bindVars)
+		return id
+
+	def update_image(self, id, ptimestamp, ptime, fire):
+		bindVars = {
+			'id': id,
+			'processed_timestamp': ptimestamp.isoformat(),
+			'processed_time': ptime,
+			'fire': fire
+		}
+		aql = '''
+			FOR doc IN images
+				FILTER doc.image == @id
+				UPDATE doc WITH { 'processed_timestamp': @processed_timestamp, 'processed_time': @processed_time, 'fire': @fire } IN images
+		'''
+		return self.db.AQLQuery(aql, bindVars=bindVars, rawResults=True)

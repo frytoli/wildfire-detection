@@ -27,6 +27,16 @@ import os
 n = int(os.getenv('CHUNK_SIZE'))
 
 def _prioritize_cameras(tweets, docs):
+	'''
+	Prioritize given camera documents based off of mentions in given Tweet text.
+
+	Args:
+	`tweets`: [list(str)] The list of Tweet texts
+	`docs`: [list(dict)] The list of raw "camera" documents
+
+	Returns:
+	An iterable where the first item is a list of all "camera" documents whose "title" values were found in at least one of the given Tweet texts and the second item is a list of all of the "camera" documents whose titles were not found in any of the given Tweet texts.
+	'''
 	high = []
 	low = []
 	# Iterate over documents
@@ -41,6 +51,9 @@ def _prioritize_cameras(tweets, docs):
 	return high, low
 
 def fetch_tweets(**kwargs):
+	'''
+	Fetch the last ten Tweets that include the query string "@alertwildfire" and get/chunk all "camera" documents in anticipation of scraping if at least one new Tweet is observed.
+	'''
 	# Initialize database object
 	adb = db.arangodb(
 		Variable.get('DB_HOST'),
@@ -83,6 +96,9 @@ def fetch_tweets(**kwargs):
 		return False
 
 def branch(**kwargs):
+	'''
+	Decipher whether or not scraping needs to occur.
+	'''
 	continue_to_scrape = kwargs['ti'].xcom_pull('fetch-tweets')
 	if continue_to_scrape:
 		return 'scrape-dummy'
@@ -91,10 +107,10 @@ def branch(**kwargs):
 
 def _get_proxies():
 	'''
-		Fetch a free list of proxies from Proxyscrape.com
+		Fetch a free list of http proxies from Proxyscrape.com.
 
 		Returns:
-			(list(str)) A list of valid proxy:port pair strings
+		A list of valid proxy:port pair strings.
 	'''
 	# Initialize HTML session
 	session = HTMLSession()
@@ -129,6 +145,16 @@ def _get_proxies():
 	return good_pairs
 
 def _find_closest_request_time(desired, base, delta):
+	'''
+	Find the closest time to the desired time given a starting base time and time delta in seconds.
+
+	Args:
+	`desired`: [int] The desired epoch time (in seconds) which evaluate the closest time given the base time and time delta
+	`base`: [int] The base epoch time (in seconds)
+	`delta`: [int] The time delta (in seconds)
+	Returns:
+	The closest time to the desired time given the starting base time and time delta.
+	'''
 	# Base time is always < desired time
 	return int(base+(((desired-base)//delta)*delta))
 

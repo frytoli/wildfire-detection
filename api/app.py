@@ -13,10 +13,6 @@ r = redis.Redis(host=os.getenv('BACKEND_HOST'), port=os.getenv('BACKEND_PORT'))
 class Image(BaseModel):
     image: str
 
-@app.get('/')
-def get_root():
-    return {'Hello': 'World'}
-
 @app.post('/detect/', status_code=200)
 def post_detect(image: Image):
     r.publish('redis-detection-channel', image.image)

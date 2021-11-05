@@ -7,6 +7,7 @@ can we load first into global variable?
 
 # Airflow
 from airflow.providers.redis.sensors.redis_pub_sub import RedisPubSubSensor
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.operators.python_operator import PythonOperator
 from airflow.operators.python import BranchPythonOperator
 from airflow.exceptions import AirflowFailException
@@ -28,106 +29,99 @@ import db
 import io
 import os
 
-# Initialize a golbal YOLO object
-yolo = YOLO(
-    **{
-        'model_path': model_path,
-        'anchors_path': anchors_path,
-        'classes_path': classes_path,
-        'score': 0.25,
-        'gpu': 1,
-        'model_image_size': (416, 416)
-    }
-)
-
-# ========================================================================
-
 def handle_input(**kwargs):
-    # Retrieve published image via Redis Pub-Sub Sensor
-    message = kwargs['ti'].xcom_pull('redis-sensor', key='message')
-    print(f'Successfully received message: {message}')
+	# Retrieve published image via Redis Pub-Sub Sensor
+	message = kwargs['ti'].xcom_pull('redis-sensor', key='message')
+	print(f'Successfully received message: {message}')
 
-    # Get base64 encoded image string
-    image = message['data']
-    # Decode to bytes
-    try:
-        image = base64.b64decode(image)
-    except:
-        raise AirflowFailException('Received image could not be base64 decoded')
+	# Get base64 encoded image string
+	image = message['data']
+	# Decode to bytes
+	try:
+		image = base64.b64decode(image)
+	except:
+		raise AirflowFailException('Received image could not be base64 decoded')
 
-    # Insert record into database
-    adb = db.arangodb(
-    	Variable.get('DB_HOST'),
-    	Variable.get('DB_PORT'),
-    	Variable.get('DB_USER'),
-    	Variable.get('DB_PASS'),
-    	Variable.get('DB_NAME')
-    )
-    id = adb.insert_image()
+	# Insert record into database
+	adb = db.arangodb(
+		Variable.get('DB_HOST'),
+		Variable.get('DB_PORT'),
+		Variable.get('DB_USER'),
+		Variable.get('DB_PASS'),
+		Variable.get('DB_NAME')
+	)
+	id = adb.insert_image()
 
-    # Return
-    return id, image
+	# Return
+	return id, image
 
 def invoke_model(**kwargs):
-    # Retrieve unique record id and bytes-representation of image from xcom
-    id, image = kwargs['ti'].xcom_pull('handle-input')
+	# Retrieve unique record id and bytes-representation of image from xcom
+	id, image = kwargs['ti'].xcom_pull('handle-input')
 
-    # Set paths to model, anchors, and classes
-    model_path = os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'yolo.h5') # If built with Docker, the model's name is always "yolo.h5" -- See Dockerfile
-    anchors_path = os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'yolo3', 'yolo_anchors.txt')
-    classes_path = os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'data_classes.txt')
+	# Initialize a golbal YOLO object
+	yolo = YOLO(
+		**{
+			'model_path': os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'yolo.h5'), # If built with Docker, the model's name is always "yolo.h5" -- See Dockerfile
+			'anchors_path': os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'yolo3', 'yolo_anchors.txt'),
+			'classes_path': os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'data_classes.txt'),
+			'score': 0.25,
+			'gpu': 1,
+			'model_image_size': (416, 416)
+		}
+	)
 
-    start = time.time()
-    # Convert bytes to PIL Image
-    try:
-        image = Image.open(io.BytesIO(image))
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-    except:
-        raise AirflowFailException('Could not convert byte array to PIL Image')
+	start = time.time()
+	# Convert bytes to PIL Image
+	try:
+		image = Image.open(io.BytesIO(image))
+		if image.mode != 'RGB':
+			image = image.convert('RGB')
+	except:
+		raise AirflowFailException('Could not convert byte array to PIL Image')
 
-    # Detect fire in image with globall yolo object
-    prediction, new_image = yolo.detect_image(image)
+	# Detect fire in image with globall yolo object
+	prediction, new_image = yolo.detect_image(image)
 
-    # Get x and y sizes
-    y_size, x_size, _ = np.array(new_image).shape
+	# Get x and y sizes
+	y_size, x_size, _ = np.array(new_image).shape
 
-    # Initialize database object
-    adb = db.arangodb(
-    	Variable.get('DB_HOST'),
-    	Variable.get('DB_PORT'),
-    	Variable.get('DB_USER'),
-    	Variable.get('DB_PASS'),
-    	Variable.get('DB_NAME')
-    )
+	# Initialize database object
+	adb = db.arangodb(
+		Variable.get('DB_HOST'),
+		Variable.get('DB_PORT'),
+		Variable.get('DB_USER'),
+		Variable.get('DB_PASS'),
+		Variable.get('DB_NAME')
+	)
 
-    # Get elpased and completion time
-    elapsed = time.time()-start
-    timestamp = datetime.datetime.utcnow()
-    print(f'Detection completed in {elapsed} seconds')
+	# Get elpased and completion time
+	elapsed = time.time()-start
+	timestamp = datetime.datetime.utcnow()
+	print(f'Detection completed in {elapsed} seconds')
 
-    #print(prediction, y_size, x_size)
-    if len(prediction) > 0:
-        print('Fire detected in image')
-        #new_image.save('out.jpg')
-        # Update database record
-        adb.update_image(id, timestamp, elapsed, True)
-        return True
-    else:
-        print('No fire detected in image')
-        # Update database record
-        adb.update_image(id, timestamp, elapsed, False)
-        return False
+	#print(prediction, y_size, x_size)
+	if len(prediction) > 0:
+		print('Fire detected in image')
+		#new_image.save('out.jpg')
+		# Update database record
+		adb.update_image(id, timestamp, elapsed, True)
+		return True
+	else:
+		print('No fire detected in image')
+		# Update database record
+		adb.update_image(id, timestamp, elapsed, False)
+		return False
 
 def branch(**kwargs):
-    continue_to_alert = kwargs['ti'].xcom_pull('invoke-model')
-    if continue_to_alert:
-        return 'alert'
-    else:
-        return 'no-alert'
+	continue_to_alert = kwargs['ti'].xcom_pull('invoke-model')
+	if continue_to_alert:
+		return 'alert'
+	else:
+		return 'no-alert'
 
 def alert(**kwargs):
-    print('Now alerting the fire department')
+	print('Now alerting the fire department')
 
 # ========================================================================
 
@@ -146,48 +140,55 @@ DAG = DAG(
 	dag_id = 'fire-detection-and-alert',
 	description = 'Fire detection in provided images with the trained model and consequential alerting of appropriate parties upon True observations',
 	default_args = default_args,
-    concurrency = 10,
+	concurrency = 10,
 	max_active_runs = 10,
 	catchup = False,
-	schedule_interval = '*/1 * * * *', # Every minute
+	schedule_interval = '@once', # One time - DAG is triggered by itself upon retrieving a new message from the queue
 	dagrun_timeout=datetime.timedelta(days=1) # 24 hour timeout
 )
 snsr_redis_pubsub = RedisPubSubSensor(
-    task_id = 'redis-sensor',
-    channels = 'redis-detection-channel',
-    redis_conn_id = 'redis-default',
-    dag = DAG
+	task_id = 'redis-sensor',
+	channels = 'redis-detection-channel',
+	redis_conn_id = 'redis-default',
+	dag = DAG
 )
 opr_handle_input = PythonOperator(
-    task_id = 'handle-input',
-    provide_context = True,
-    python_callable = handle_input,
-    dag = DAG
+	task_id = 'handle-input',
+	provide_context = True,
+	python_callable = handle_input,
+	dag = DAG
 )
 opr_invoke_model = PythonOperator(
-    task_id = 'invoke-model',
-    provide_context = True,
-    python_callable = invoke_model,
-    dag = DAG
+	task_id = 'invoke-model',
+	provide_context = True,
+	python_callable = invoke_model,
+	dag = DAG
+)
+opr_trigger_newdag = TriggerDagRunOperator(
+	task_id = 'trigger-newdag',
+	trigger_dag_id = 'fire-detection-and-alert',
+	wait_for_completion = False,
+	dag = DAG
 )
 branch = BranchPythonOperator(
-    task_id = 'branch',
-    provide_context = True,
-    python_callable = branch,
-    dag = DAG
+	task_id = 'branch',
+	provide_context = True,
+	python_callable = branch,
+	dag = DAG
 )
-opr_noscrape_dummy = DummyOperator(
+opr_noalert_dummy = DummyOperator(
 	task_id = 'no-alert',
 	dag = DAG
 )
 # This can be converted to a SubDAG
 opr_alert = PythonOperator(
-    task_id = 'alert',
-    provide_context = True,
-    python_callable = alert,
-    dag = DAG
+	task_id = 'alert',
+	provide_context = True,
+	python_callable = alert,
+	dag = DAG
 )
 
 # ========================================================================
 
-snsr_redis_pubsub >> opr_handle_input >> opr_invoke_model >> branch >> [opr_noscrape_dummy, opr_alert]
+snsr_redis_pubsub >> opr_trigger_newdag
+snsr_redis_pubsub >> opr_handle_input >> opr_invoke_model >> branch >> [opr_noalert_dummy, opr_alert]

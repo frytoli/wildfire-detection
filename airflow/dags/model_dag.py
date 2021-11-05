@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 
+'''
+Model load time is slow
+can we load first into global variable?
+'''
+
 # Airflow
 from airflow.providers.redis.sensors.redis_pub_sub import RedisPubSubSensor
 from airflow.operators.python_operator import PythonOperator
@@ -22,6 +27,20 @@ import time
 import db
 import io
 import os
+
+# Initialize a golbal YOLO object
+yolo = YOLO(
+    **{
+        'model_path': model_path,
+        'anchors_path': anchors_path,
+        'classes_path': classes_path,
+        'score': 0.25,
+        'gpu': 1,
+        'model_image_size': (416, 416)
+    }
+)
+
+# ========================================================================
 
 def handle_input(**kwargs):
     # Retrieve published image via Redis Pub-Sub Sensor
@@ -58,18 +77,6 @@ def invoke_model(**kwargs):
     anchors_path = os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'yolo3', 'yolo_anchors.txt')
     classes_path = os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'data_classes.txt')
 
-    # Initialize YOLO object
-    yolo = YOLO(
-        **{
-            'model_path': model_path,
-            'anchors_path': anchors_path,
-            'classes_path': classes_path,
-            'score': 0.25,
-            'gpu': 1,
-            'model_image_size': (416, 416)
-        }
-    )
-
     start = time.time()
     # Convert bytes to PIL Image
     try:
@@ -79,7 +86,7 @@ def invoke_model(**kwargs):
     except:
         raise AirflowFailException('Could not convert byte array to PIL Image')
 
-    # Detect fire in image
+    # Detect fire in image with globall yolo object
     prediction, new_image = yolo.detect_image(image)
 
     # Get x and y sizes
@@ -139,6 +146,7 @@ DAG = DAG(
 	dag_id = 'fire-detection-and-alert',
 	description = 'Fire detection in provided images with the trained model and consequential alerting of appropriate parties upon True observations',
 	default_args = default_args,
+    concurrency = 10,
 	max_active_runs = 10,
 	catchup = False,
 	schedule_interval = '*/1 * * * *', # Every minute

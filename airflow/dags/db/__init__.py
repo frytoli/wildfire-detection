@@ -74,12 +74,13 @@ class arangodb():
 		id = str(uuid.uuid4())
 		bindVars = {
 			'doc': {
-				'image': id,
+				'id': id,
 				'status': 'recieved',
 				'recieved_timestamp': datetime.datetime.utcnow().isoformat(),
 				'processed_timestamp': None,
 				'processed_time': None,
-				'fire': None
+				'fire': None,
+				'image': None
 			}
 		}
 		aql = '''
@@ -88,16 +89,30 @@ class arangodb():
 		self.db.AQLQuery(aql, bindVars=bindVars)
 		return id
 
-	def update_image(self, id, ptimestamp, ptime, fire):
-		bindVars = {
-			'id': id,
-			'processed_timestamp': ptimestamp.isoformat(),
-			'processed_time': ptime,
-			'fire': fire
-		}
-		aql = '''
-			FOR doc IN images
-				FILTER doc.image == @id
-				UPDATE doc WITH { 'processed_timestamp': @processed_timestamp, 'processed_time': @processed_time, 'fire': @fire } IN images
-		'''
+	def update_image(self, id, ptimestamp, ptime, fire, image=None):
+		if image:
+			bindVars = {
+				'id': id,
+				'processed_timestamp': ptimestamp.isoformat(),
+				'processed_time': ptime,
+				'fire': fire,
+				'image': image
+			}
+			aql = '''
+				FOR doc IN images
+					FILTER doc.id == @id
+					UPDATE doc WITH { 'processed_timestamp': @processed_timestamp, 'processed_time': @processed_time, 'fire': @fire, 'image': @image } IN images
+			'''
+		else:
+			bindVars = {
+				'id': id,
+				'processed_timestamp': ptimestamp.isoformat(),
+				'processed_time': ptime,
+				'fire': fire
+			}
+			aql = '''
+				FOR doc IN images
+					FILTER doc.id == @id
+					UPDATE doc WITH { 'processed_timestamp': @processed_timestamp, 'processed_time': @processed_time, 'fire': @fire } IN images
+			'''
 		return self.db.AQLQuery(aql, bindVars=bindVars, rawResults=True)

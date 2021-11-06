@@ -48,7 +48,8 @@ services:
       BACKEND_HOST: redis
       BACKEND_PORT: 6379
     ports:
-        - 127.0.0.1:80:80
+        - 1905:80
+        - 127.0.0.1:8000:8000
 
   postgres:
     hostname: postgres

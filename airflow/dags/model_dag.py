@@ -122,8 +122,8 @@ DAG = DAG(
 	dag_id = 'fire-detection-and-alert',
 	description = 'Fire detection in provided images with the trained model and consequential alerting of appropriate parties upon True observations',
 	default_args = default_args,
-	concurrency = 10,
-	max_active_runs = 10,
+	concurrency = 15,
+	max_active_runs = 30,
 	catchup = False,
 	schedule_interval = '@once', # One time - DAG is triggered by itself upon retrieving a new message from the queue
 	dagrun_timeout=datetime.timedelta(days=1) # 24 hour timeout

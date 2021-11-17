@@ -2,14 +2,16 @@
 
 '''
 One-time enumerator to scrape and save camera URLs to database
-Last updated: 2021-11-03
+Last updated: 2021-11-16
 '''
 
-from requests_html import HTMLSession
-from pyArango.connection import *
+from pymongo import MongoClient
+from requests import exceptions
+from pymongo import exceptions
 import datetime
 import random
 import time
+import uuid
 import os
 
 class arangodb():
@@ -19,29 +21,25 @@ class arangodb():
 		DB_USER = os.getenv('DB_USER')
 		DB_PASS = os.getenv('DB_PASS')
 		DB_NAME = os.getenv('DB_NAME')
-		self.db = Connection(
-			arangoURL='http://{}:{}'.format(DB_HOST, DB_PORT),
-			username=DB_USER,
-			password=DB_PASS
-		)[DB_NAME]
+		# Attempt to establish a connection
+		self.db = None
+		client = MongoClient(f'mongodb://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}')
+		self.db = client[DB_NAME]
 
 	def insert_camera(self, axis, region, url, title, request_time):
-		aql = '''
-			INSERT @doc INTO cameras
-		'''
-		bindVars = {
-			'doc': {
-				'axis':axis,
-				'region': region,
-				'url':url,
-				'title': title,
-				'request_time': request_time,
-				'request_time_delta': 15,
-				'time_units': 'seconds',
-				'timestamp':datetime.datetime.utcnow().isoformat()
-			}
+		collection = self.db['alertwildfire-cameras']
+		doc = {
+			'id': str(uuid.uuid4()),
+			'axis':axis,
+			'region': region,
+			'url':url,
+			'title': title,
+			'request_time': request_time,
+			'request_time_delta': 15,
+			'time_units': 'seconds',
+			'timestamp':datetime.datetime.utcnow().isoformat()
 		}
-		self.db.AQLQuery(aql, bindVars=bindVars)
+		collection.insert_one(doc)
 
 def enumerate():
 	# Initialize db object

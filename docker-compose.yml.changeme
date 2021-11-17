@@ -29,18 +29,6 @@ x-airflow-common:
       condition: service_healthy
 
 services:
-  arangodb:
-    hostname: arangodb
-    image: arangodb:latest
-    container_name: arangodb
-    environment:
-      ARANGO_ROOT_PASSWORD: changeme
-    ports:
-        - 127.0.0.1:8529:8529
-    volumes:
-      - ./arango-data/arangodb_data:/var/lib/arangodb3
-      - ./arango-data/arangodb_apps:/var/lib/arangodb3-apps
-
   api:
     hostname: model-api
     build: ./api
@@ -157,3 +145,8 @@ services:
 volumes:
   postgres-data:
   arangodb-data:
+
+networks:
+  default:
+    external:
+      name: airflownet

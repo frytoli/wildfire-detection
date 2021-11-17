@@ -11,26 +11,28 @@ from airflow.models import Variable
 from airflow import DAG
 
 # Other
-from model.yolo3.yolo import YOLO, detect_video
-from PIL import Image
-import numpy as np
 import datetime
-import logging
-import base64
-import random
-import json
-import time
-import db
-import io
-import os
 
 def invoke_model(**kwargs):
+	from model.yolo3.yolo import YOLO, detect_video
+	from PIL import ImageFile
+	from PIL import Image
+	import numpy as np
+	import base64
+	import time
+	import db
+	import io
+	import os
+
+	ImageFile.LOAD_TRUNCATED_IMAGES = True
+
 	# Retrieve published image via Redis Pub-Sub Sensor
 	message = kwargs['ti'].xcom_pull('redis-sensor', key='message')
 	print(f'Successfully received message: {message}')
 
-	# Get base64 encoded image string
-	image = message['data']
+	# Split message on delimiter and get id/image
+	data = message['data'].split(b'   ')
+	id, image = data[0].decode('utf-8'), data[1]
 	# Decode image to bytes
 	try:
 		image = base64.b64decode(image)
@@ -38,7 +40,7 @@ def invoke_model(**kwargs):
 		raise AirflowFailException('Received image could not be base64 decoded')
 
 	# Initialize database object
-	adb = db.arangodb(
+	mdb = db.mongo(
 		Variable.get('DB_HOST'),
 		Variable.get('DB_PORT'),
 		Variable.get('DB_USER'),
@@ -46,7 +48,7 @@ def invoke_model(**kwargs):
 		Variable.get('DB_NAME')
 	)
 	# Insert record into database
-	id = adb.insert_image()
+	mdb.insert_detection(id)
 
 	# Initialize a golbal YOLO object
 	yolo = YOLO(
@@ -87,12 +89,12 @@ def invoke_model(**kwargs):
 		buffered = io.BytesIO()
 		new_image.save(buffered, format='JPEG')
 		new_image_str = base64.b64encode(buffered.getvalue())
-		adb.update_image(id, timestamp, elapsed, True, image=new_image_str)
+		mdb.update_detection(id, timestamp, elapsed, True, image=new_image_str)
 		return True
 	else:
 		print('No fire detected in image')
 		# Update database record
-		adb.update_image(id, timestamp, elapsed, False)
+		mdb.update_detection(id, timestamp, elapsed, False)
 		return False
 
 def branch(**kwargs):

@@ -11,17 +11,21 @@ from airflow.models import Variable
 from airflow import DAG
 
 # Other
-from searchtweets import load_credentials, gen_request_parameters, collect_results
-from requests_html import HTMLSession, AsyncHTMLSession
 import datetime
 import asyncio
-import logging
-import base64
 import random
 import time
-import db
-import re
 import os
+import db
+
+# Initialize database object
+mdb = db.mongo(
+	Variable.get('DB_HOST'),
+	Variable.get('DB_PORT'),
+	Variable.get('DB_USER'),
+	Variable.get('DB_PASS'),
+	Variable.get('DB_NAME')
+)
 
 # Set size of chunks
 n = int(os.getenv('CHUNK_SIZE'))
@@ -54,14 +58,8 @@ def fetch_tweets(**kwargs):
 	'''
 	Fetch the last ten Tweets that include the query string "@alertwildfire" and get/chunk all "camera" documents in anticipation of scraping if at least one new Tweet is observed.
 	'''
-	# Initialize database object
-	adb = db.arangodb(
-		Variable.get('DB_HOST'),
-		Variable.get('DB_PORT'),
-		Variable.get('DB_USER'),
-		Variable.get('DB_PASS'),
-		Variable.get('DB_NAME')
-	)
+	from searchtweets import load_credentials, gen_request_parameters, collect_results
+
 	# Load credentials from environment vars
 	search_args = load_credentials(None)
 	# Craft query
@@ -72,15 +70,15 @@ def fetch_tweets(**kwargs):
 	new_tweets = []
 	# Check for new tweets and insert into database
 	for tweet in tweets:
-		upsert_resp = adb.insert_new_tweet(tweet['id'], tweet['text'])[0]
-		if upsert_resp['type'] == 'insert':
+		upsert_resp = mdb.insert_new_tweet(tweet['id'], tweet['text'])
+		if upsert_resp:
 			new_tweets.append(tweet['text'])
 	# If a new tweet was found, kick off alertwildfire classic camera image scraping tasks
 	if len(new_tweets)>0:
 		# Get current epoch time
 		epoch = int(time.time())
 		# Retrieve all links from 'cameras' collection in database
-		docs = adb.get_docs('cameras')
+		docs = mdb.get_docs('alertwildfire-cameras')
 		# Prioritize cameras that were mentioned in new tweets
 		high, low = _prioritize_cameras(new_tweets, docs)
 		random.shuffle(low)
@@ -112,6 +110,8 @@ def _get_proxies():
 		Returns:
 		A list of valid proxy:port pair strings.
 	'''
+	from requests_html import HTMLSession
+
 	# Initialize HTML session
 	session = HTMLSession()
 	# Request data from proxyscrape API
@@ -158,13 +158,13 @@ def _find_closest_request_time(desired, base, delta):
 	# Base time is always < desired time
 	return int(base+(((desired-base)//delta)*delta))
 
-def _make_afunc(asession, axis, url, proxy, headers={}, render=False):
+def _make_afunc(asession, id, url, proxy, headers={}, render=False):
 	'''
 		Dynamically build an asynchronous function at runtime for use by requests-html's AsyncHTMLSession's run() method
 
 		Args:
 			asession: (AsyncHTMLSession) the AsyncHTMLSession object
-			axis: (str) the document's axis
+			id: (str) the document's id
 			url: (str) the docuemnt's url to the camera
 			proxy: (str) a proxy:port pair
 			headers: (dict) (optional) dictionary of desired request headers
@@ -174,7 +174,7 @@ def _make_afunc(asession, axis, url, proxy, headers={}, render=False):
 			asynchronous function
 				Returns:
 					(requests-html response object)
-					(str) the document's axis
+					(str) the document's id
 					(str) the docuemnt's url to the camera
 					(str) the provided proxy:port pair
 	'''
@@ -208,7 +208,7 @@ def _make_afunc(asession, axis, url, proxy, headers={}, render=False):
 		except Exception as e:
 			print(f'  [!] Error: {e}')
 			r = None
-		return r, axis, url
+		return r, id, url
 	return _afunction
 
 def scrape_classic(**kwargs):
@@ -217,12 +217,15 @@ def scrape_classic(**kwargs):
 
 		Args:
 			saveto_dir: (str) path to the directory where the images are to be saved
-			docs: (list(dic())) a list of json documents with keys "axis" and "url"
+			docs: (list(dic())) a list of json documents with keys "id" and "url"
 			timeout: (int) (optional) number of seconds until timeout; this defaults to 50 minutes, 10 minutes less than RabbitMQ's timeout
 
 		Returns:
 			dictionary object of {"success": int() successful job count, "failure":int() failed job count}
 	'''
+	from requests_html import AsyncHTMLSession
+	import base64
+
 	# Pull chunk from xcom
 	scraper_id = kwargs['ti'].task_id.split('-')[-1]
 	message = kwargs['ti'].xcom_pull(key=f'classic-chunk-{scraper_id}', task_ids='fetch-tweets')
@@ -248,7 +251,7 @@ def scrape_classic(**kwargs):
 	if len(proxies) == 0:
 		raise AirflowException('List of proxies is empty')
 	# Initialize records
-	active = {cam['axis']: {'url': f'''{cam['url']}{_find_closest_request_time(epoch, cam['request_time'], cam['request_time_delta'])}'''} for cam in cameras}
+	active = {cam['id']: {'url': f'''{cam['url']}{_find_closest_request_time(epoch, cam['request_time'], cam['request_time_delta'])}'''} for cam in cameras}
 	# Initialize temp Async HTML session
 	asession = None
 	# Loop until all good responses are found
@@ -268,17 +271,17 @@ def scrape_classic(**kwargs):
 			asession = AsyncHTMLSession(loop=loop)
 		# Craft dynamic arguments for async session
 		aargs = []
-		for axis in active:
-			camera = active[axis]
+		for id in active:
+			camera = active[id]
 			# Make async function for image page request
-			aargs.append(_make_afunc(asession, axis, camera['url'], random.choice(proxies), headers={'Referer': 'http://www.alertwildfire.org/'}, render=True))
-		# Make async requests and pair with axis
+			aargs.append(_make_afunc(asession, id, camera['url'], random.choice(proxies), headers={'Referer': 'http://www.alertwildfire.org/'}, render=True))
+		# Make async requests and pair with id
 		results = asession.run(*aargs)
 		# Iterate over results and push image to queue is scraping was successful
 		for result in results:
 			# Parse result for ease of use
 			r = result[0]
-			axis = result[1]
+			id = result[1]
 			url = result[2]
 			if r and r.status_code in [200, 301, 302, 303, 307]:
 				print(f'[-] Good response from {url}')
@@ -287,13 +290,13 @@ def scrape_classic(**kwargs):
 					task_id = f'redis-publish-{scraper_id}.{task_num}',
 					channel = 'redis-detection-channel',
 					redis_conn_id = 'redis-default',
-					message = base64.b64encode(r.content).decode('utf-8'),
+					message = f'''{id}   {base64.b64encode(r.content).decode('utf-8')}''',
 					dag = DAG
 				).execute(context=kwargs)
-				print(f'Pushed image {axis} to detection queue')
+				print(f'Pushed image {id} to detection queue')
 				task_num += 1
 				# Update record, aka remove it from the list of active tasks
-				del active[axis]
+				del active[id]
 				# Increment success and decrement failure
 				success += 1
 				failure -= 1
@@ -352,14 +355,7 @@ opr_noscrape_dummy = DummyOperator(
 	dag = DAG
 )
 # Decipher number of tasks to include in group
-adb = db.arangodb(
-	Variable.get('DB_HOST'),
-	Variable.get('DB_PORT'),
-	Variable.get('DB_USER'),
-	Variable.get('DB_PASS'),
-	Variable.get('DB_NAME')
-)
-cam_count = adb.get_count('cameras')
+cam_count = mdb.get_count('alertwildfire-cameras')
 task_count = cam_count//n
 if cam_count%n != 0:
 	task_count += 1

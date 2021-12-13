@@ -5,7 +5,6 @@ from airflow.contrib.operators.redis_publish_operator import RedisPublishOperato
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.operators.python_operator import PythonOperator
 from airflow.operators.python import BranchPythonOperator
-from airflow.operators.dummy import DummyOperator
 from airflow.exceptions import AirflowException
 from airflow.utils.task_group import TaskGroup
 from airflow.models import Variable
@@ -63,7 +62,7 @@ def branch(**kwargs):
 	if len(regions) > 0:
 		return 'prep-regions'
 	else:
-		return 'dummy-noscrape'
+		return 'trigger-newdag2'
 
 def prep_regions(**kwargs):
 	'''
@@ -330,12 +329,14 @@ opr_prep_regions = PythonOperator(
 	provide_context = True,
 	dag = DAG
 )
-opr_dummy_noscrape = DummyOperator(
-	task_id = 'dummy-noscrape',
-	dag = DAG
-)
 opr_trigger_newdag = TriggerDagRunOperator(
 	task_id = 'trigger-newdag',
+	trigger_dag_id = 'alertwildfire-classic-scraper',
+	wait_for_completion = False,
+	dag = DAG
+)
+opr_trigger_newdag2 = TriggerDagRunOperator(
+	task_id = 'trigger-newdag2',
 	trigger_dag_id = 'alertwildfire-classic-scraper',
 	wait_for_completion = False,
 	dag = DAG
@@ -360,4 +361,4 @@ with TaskGroup(
 # ========================================================================
 
 opr_pull_regions >> opr_branch >> opr_prep_regions >> scraper_group >> opr_trigger_newdag
-opr_pull_regions >> opr_branch >> opr_dummy_noscrape >> opr_trigger_newdag
+opr_pull_regions >> opr_branch >> opr_trigger_newdag2

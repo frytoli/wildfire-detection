@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 
-from pymongo import MongoClient
+from pymongo import MongoClient, errors
 from requests import exceptions
-from pymongo import exceptions
 import datetime
 import time
 
@@ -14,20 +13,16 @@ class mongo():
 			try:
 				client = MongoClient(f'mongodb://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}')
 				self.db = client[DB_NAME]
-			except (exceptions.ConnectionError, exceptions.ServerSelectionTimeoutError) as e:
+			except (exceptions.ConnectionError, errors.ConnectionFailure) as e:
 				print(f'[!] Failed to establish a connection: {e}\n  [-] Trying again in 5 seconds')
 				time.sleep(5)
 
-	def get_docs(self, collection, tweetid=0):
+	def get_docs(self, collection, filter={}):
 		'''
-			Fetch documents from database with optional tweet id range filtering
+			Fetch documents from database with optional filter
 		'''
-		if tweetid:
-			collection = self.db[collection]
-			return list(collection.find({'tweetid': {'$gt': tweetid}}))
-		else:
-			collection = self.db[collection]
-			return list(collection.find({}))
+		collection = self.db[collection]
+		return list(collection.find(filter))
 
 	def insert_new_tweet(self, tweetid, text):
 		'''
@@ -44,6 +39,10 @@ class mongo():
 	def get_count(self, collection):
 		collection = self.db[collection]
 		return int(collection.count())
+
+	def get_all_regions(self):
+		collection = self.db['alertwildfire-cameras']
+		return list(collection.find().distinct('region'))
 
 	def insert_detection(self, id):
 		doc = {

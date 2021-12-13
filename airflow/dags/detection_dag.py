@@ -30,9 +30,9 @@ def invoke_model(**kwargs):
 	message = kwargs['ti'].xcom_pull('redis-sensor', key='message')
 	print(f'Successfully received message: {message}')
 
-	# Split message on delimiter and get id/image
+	# Split message on delimiter and get id/region/image
 	data = message['data'].split(b'   ')
-	id, image = data[0].decode('utf-8'), data[1]
+	id, region, image = data[0].decode('utf-8'), data[1].decode('utf-8'), data[2]
 	# Decode image to bytes
 	try:
 		image = base64.b64decode(image)
@@ -90,22 +90,35 @@ def invoke_model(**kwargs):
 		new_image.save(buffered, format='JPEG')
 		new_image_str = base64.b64encode(buffered.getvalue())
 		mdb.update_detection(id, timestamp, elapsed, True, image=new_image_str)
-		return True
+		return True, region
 	else:
 		print('No fire detected in image')
 		# Update database record
 		mdb.update_detection(id, timestamp, elapsed, False)
-		return False
+		return False, region
 
 def branch(**kwargs):
-	continue_to_alert = kwargs['ti'].xcom_pull('invoke-model')
+	continue_to_alert, region = kwargs['ti'].xcom_pull('invoke-model')
 	if continue_to_alert:
 		return 'alert'
 	else:
 		return 'no-alert'
 
 def alert(**kwargs):
-	print('Now alerting the fire department')
+	'''
+	Push region to the ALERTWildfire channel to be scraped again and (not yet implemented) alert the fire department
+	'''
+	import redis
+
+	# Retrieve region
+	continue_to_alert, region = kwargs['ti'].xcom_pull('invoke-model')
+
+	# Connect to redis and push to queue
+	r = redis.Redis(host=Variable.get('REDIS_BACKEND_HOST'), port=Variable.get('REDIS_BACKEND_PORT'))
+	r.publish(Variable.get('ALERTWILDFIRE_CHANNEL'), region)
+
+	# Alert the fire department
+	print(f'Now alerting the fire department in region {region}')
 
 # ========================================================================
 
@@ -132,7 +145,7 @@ DAG = DAG(
 )
 snsr_redis_pubsub = RedisPubSubSensor(
 	task_id = 'redis-sensor',
-	channels = 'redis-detection-channel',
+	channels = Variable.get('DETECTION_CHANNEL'),
 	redis_conn_id = 'redis-default',
 	dag = DAG
 )

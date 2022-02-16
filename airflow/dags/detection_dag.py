@@ -19,6 +19,7 @@ def invoke_model(**kwargs):
 	from PIL import Image
 	import numpy as np
 	import base64
+	import drive
 	import time
 	import db
 	import io
@@ -50,19 +51,30 @@ def invoke_model(**kwargs):
 	# Insert record into database
 	mdb.insert_detection(id)
 
-	# Initialize a golbal YOLO object
-	yolo = YOLO(
+	# Initialize a fire detection YOLO object
+	fire_yolo = YOLO(
 		**{
-			'model_path': os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'yolo.h5'), # If built with Docker, the model's name is always "yolo.h5" -- See Dockerfile
+			'model_path': os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'fire.h5'), # If built with Docker, the model's name is always "fire.h5" -- See Dockerfile
 			'anchors_path': os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'yolo3', 'yolo_anchors.txt'),
-			'classes_path': os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'data_classes.txt'),
+			'classes_path': os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'fire_classes.txt'),
 			'score': 0.25,
 			'gpu': 1,
 			'model_image_size': (416, 416)
 		}
 	)
 
-	start = time.time()
+	# Initialize a smoke detection YOLO object
+	smoke_yolo = YOLO(
+		**{
+			'model_path': os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'smoke.h5'), # If built with Docker, the model's name is always "smoke.h5" -- See Dockerfile
+			'anchors_path': os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'yolo3', 'yolo_anchors.txt'),
+			'classes_path': os.path.join(os.getenv('AIRFLOW_HOME'), 'dags', 'model', 'smoke_classes.txt'),
+			'score': 0.25,
+			'gpu': 1,
+			'model_image_size': (416, 416)
+		}
+	)
+
 	# Convert bytes to PIL Image
 	try:
 		image = Image.open(io.BytesIO(image))
@@ -71,30 +83,39 @@ def invoke_model(**kwargs):
 	except:
 		raise AirflowFailException('Could not convert byte array to PIL Image')
 
-	# Detect fire in image with globall yolo object
-	prediction, new_image = yolo.detect_image(image)
+	# Detect fire in image
+	start = time.time()
+	fire_prediction, new_image = fire_yolo.detect_image(image)
+	fire_elapsed = time.time()-start
+	print(f'[-] Fire detection completed in {fire_elapsed} seconds')
 
-	# Get x and y sizes
-	y_size, x_size, _ = np.array(new_image).shape
+	# Detect smoke in new image
+	start = time.time()
+	smoke_prediction, new_image = smoke_yolo.detect_image(new_image)
+	smoke_elapsed = time.time()-start
+	print(f'[-] Smoke detection completed in {smoke_elapsed} seconds')
 
-	# Get elpased and completion time
-	elapsed = time.time()-start
+	# Set timestamp
 	timestamp = datetime.datetime.utcnow()
-	print(f'Detection completed in {elapsed} seconds')
 
 	#print(prediction, y_size, x_size)
-	if len(prediction) > 0:
-		print('Fire detected in image')
-		# Update database record
+	if len(fire_prediction) > 0 or len(smoke_prediction) > 0:
+		print('Fire and/or smoke detected in image')
+		# Load prediction image into buffer
 		buffered = io.BytesIO()
 		new_image.save(buffered, format='JPEG')
+		# Save image to Google Drive
+		gd = drive.gdrive()
+		# Upload prediction image from buffer
+		gd.upload_buffer(buffered, f'{region}_{id}_{timestamp}.jpg', mimetype='image/jpg')
+		# Update database record
 		new_image_str = base64.b64encode(buffered.getvalue())
-		mdb.update_detection(id, timestamp, elapsed, True, image=new_image_str)
+		mdb.update_detection(id, timestamp, fire_elapsed, smoke_elapsed, True, image=new_image_str)
 		return True, region
 	else:
 		print('No fire detected in image')
 		# Update database record
-		mdb.update_detection(id, timestamp, elapsed, False)
+		mdb.update_detection(id, timestamp, fire_elapsed, smoke_elapsed, False)
 		return False, region
 
 def branch(**kwargs):

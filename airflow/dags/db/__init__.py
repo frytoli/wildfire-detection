@@ -58,12 +58,13 @@ class mongo():
 		collection = self.db['detections']
 		result = collection.insert_one(doc)
 
-	def update_detection(self, id, ptimestamp, ptime, fire, image=None):
+	def update_detection(self, id, ptimestamp, ftime, stime, detected, image=None):
 		new_values = {
 			'status': 'detected',
-			'processed_timestamp': ptimestamp.isoformat(),
-			'processed_time': ptime,
-			'fire': fire,
+			'detection_timestamp': ptimestamp.isoformat(),
+			'fire_detection_time': ftime,
+			'smoke_detection_time': stime,
+			'detected': detected,
 			'image': None
 		}
 		if image:

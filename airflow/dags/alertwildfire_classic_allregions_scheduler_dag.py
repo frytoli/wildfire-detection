@@ -36,7 +36,7 @@ DAG = DAG(
 	concurrency = 1,
 	max_active_runs = 1,
 	catchup = False,
-	schedule_interval = '0 * * * *', # Every hour
+	schedule_interval = '* 0-23/4 * * *', # Every 4 hours
 	dagrun_timeout=datetime.timedelta(days=1) # 24 hour timeout
 )
 opr_redis_publish = RedisPublishOperator(

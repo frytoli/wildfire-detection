@@ -5,13 +5,15 @@ One-time enumerator to scrape and save camera URLs to database
 Last updated: 2021-11-16
 '''
 
-from pymongo import MongoClient
-from requests import exceptions
-from pymongo import exceptions
+#from pymongo import MongoClient
+#from requests import exceptions
+#from pymongo import exceptions
+from requests_html import HTMLSession
 import datetime
 import random
 import time
 import uuid
+import json
 import os
 
 class arangodb():
@@ -42,10 +44,10 @@ class arangodb():
 		collection.insert_one(doc)
 
 def enumerate():
-	# Initialize db object
-	adb = arangodb()
+	# Initialize record data object
+	data = []
 	# Set root url and regions
-	root_url = 'http://www.alertwildfire.org/'
+	root_url = 'http://classic.alertwildfire.org/'
 	regions = [
 		'oregon',
 		'shastamodoc',
@@ -89,11 +91,23 @@ def enumerate():
 			p = thumb.find('p', first=True)
 			# Get camera title
 			title = p.text
-			# Save to database
-			adb.insert_camera(id, region, src, title, request_time)
+			# Save record
+			data.append({
+				'axis': id,
+				'region': region,
+				'url': src,
+				'title': title,
+				'request_time': request_time,
+				'request_time_delta': 15,
+				'time_units': 'seconds',
+				'timestamp':datetime.datetime.utcnow().isoformat()
+			})
 			print(f'  [+] Camera {id} saved')
 		time.sleep(random.randint(4,20))
 	session.close()
+	# Write to file
+	with open('cameras.json', 'w') as outjson:
+		json.dump(data, outjson, indent=2)
 
 if __name__ == '__main__':
 	enumerate()
